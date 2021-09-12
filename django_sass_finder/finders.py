@@ -1,21 +1,26 @@
-from django.conf import settings
-from django.contrib.staticfiles.finders import BaseFinder
-from django.core.files.storage import FileSystemStorage
-from django.core.checks import Error
+# -*- coding: utf-8 -*-
+import stat
+from pathlib import Path
+
 import sass
 
-class ScssFinder(BaseFinder):
+from django.conf import settings
+from django.contrib.staticfiles.finders import FileSystemFinder
+from django.core.checks import Error
+
+
+class ScssFinder(FileSystemFinder):
     """
-    Finds .scss files specified in SCSS_ROOT and SCSS_COMPILE settings.
+    Finds .scss files specified in SCSS_ROOT and SCSS_COMPILE settings with globs.
     """
 
-    def __init__(self, *_args, **_kwargs):
-        try:
-            self.scss_compile = settings.SCSS_COMPILE
-        except AttributeError:
-            self.scss_compile = []
-        self.root = settings.SCSS_ROOT
-        self.storage = FileSystemStorage(settings.CSS_COMPILE_DIR)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scss_compile = getattr(settings, 'SCSS_COMPILE', ['**/*.scss'])
+        self.root = Path(settings.SCSS_ROOT)
+        self.css_compile_dir = Path(settings.CSS_COMPILE_DIR)
+        self.output_style = getattr(settings, 'SCSS_STYLE', 'compressed')
+        self.source_cache = {}
 
     def check(self, **kwargs):
         """
@@ -26,33 +31,75 @@ class ScssFinder(BaseFinder):
         errors = []
 
         for scss_item in self.scss_compile:
-            abspath = self.root / scss_item
-            if not abspath.exists() and not abspath.is_file():
+            for _ in self.root.glob(scss_item):
+                break
+            else:
                 errors.append(Error(
-                    f'{scss_item} is not a valid file.',
+                    f'{scss_item} returned no files in {self.scss_compile}.',
                     id='sass.E001'
                 ))
         return errors
 
+    def output_path(self, scss_file, makedirs=False):
+        # determine where the file will be generated, and ensure path exists if possible
+        outpath = self.css_compile_dir / scss_file.relative_to(self.root).parent
+        if makedirs:
+            outpath.mkdir(parents=True, exist_ok=True)
+        # add the filename to the output path
+        return outpath / (scss_file.stem + '.css')
+
+    def compile_scss(self):
+        # search for and compile all scss files
+        checked = []
+        for scss_item in self.scss_compile:
+            for scss_file in self.root.glob(scss_item):
+                try:
+                    scss_stat = scss_file.stat()
+                except OSError:
+                    continue        # usually FileNotFoundError
+                if not stat.S_ISREG(scss_stat.st_mode):
+                    continue        # not is_file()
+
+                # mark this as checked
+                checked.append(scss_file)
+                try:
+                    cached = self.source_cache[scss_file]
+                    if scss_stat.st_mtime == cached:
+                        continue        # unchanged, skip
+                except KeyError:
+                    pass
+
+                outpath = self.output_path(scss_file, makedirs=True)
+                # generate the css
+                with outpath.open('w+') as outfile:
+                    outfile.write(sass.compile(
+                        filename=str(scss_file),
+                        output_style=self.output_style
+                    ))
+                # add to or update the cache
+                self.source_cache[scss_file] = scss_stat.st_mtime
+
+        # walk the cache and check for any previously present files
+        removed = [scss_file for scss_file, _ in self.source_cache.items() if scss_file not in checked]
+        # and remove them from cache and unlink the target files
+        for scss_file in removed:
+            del self.source_cache[scss_file]
+            outpath = self.output_path(scss_file)
+            try:
+                outpath.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def find(self, path, all=False):
         """
-        Look for files in SCSS_ROOT, and make their paths absolute.
+        Run the compiler and leave it up to the filesystemfinder to locate it
         """
-        if all:
-            return str([settings.CSS_COMPILE_DIR / path])
-        return str(settings.CSS_COMPILE_DIR / path)
+        self.compile_scss()
+        return super().find(path, all=all)
 
-    def list(self, _ignore_patterns):
+    def list(self, ignore_patterns):
         """
         Compile then list the .css files.
         """
-        for scss_item in self.scss_compile:
-            abspath = self.root / scss_item
-            if abspath.is_file():
-                abspath = self.root / scss_item
-                abspath_str = str(abspath)
-                outpath = settings.CSS_COMPILE_DIR / (abspath.stem + '.css')
-                with open(outpath, 'w+') as outfile:
-                    outfile.write(sass.compile(filename=abspath_str, output_style='compressed'))
-                print(settings.BASE_DIR)
-                yield abspath.stem + '.css', self.storage
+        self.compile_scss()
+        return super().list(ignore_patterns)
