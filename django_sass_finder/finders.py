@@ -83,7 +83,7 @@ class ScssFinder(FileSystemFinder):
                     if self.css_map:
                         sass_args['source_map_filename'] = str(mappath)
                     if self.include_paths:
-                        sass_args['include_paths'] = self.include_paths
+                        sass_args['include_paths'] = [str(path) for path in self.include_paths]
                     if self.output_style:
                         sass_args['output_style'] = self.output_style
                     result = sass.compile(**sass_args)

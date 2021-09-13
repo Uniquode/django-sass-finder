@@ -28,7 +28,7 @@ SCSS_COMPILE = [                # a list of filename pattern to search for withi
     'admin/admin.scss',
 ]
 SCSS_INCLUDE_PATHS = [          # optional: scss compiler include paths (default = empty)
-    'node_modules'
+    BASE_DIR / 'node_modules'
 ]
 CSS_STYLE = 'compressed'            # optional: output format 'nested', 'expanded','compact','compressed'
 CSS_MAP = True                      # optional: generate a source map
