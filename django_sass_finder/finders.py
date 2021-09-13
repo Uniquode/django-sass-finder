@@ -25,6 +25,7 @@ class ScssFinder(FileSystemFinder):
         self.css_compile_dir = Path(settings.CSS_COMPILE_DIR)
         self.output_style = getattr(settings, 'CSS_STYLE', '')
         self.css_map = getattr(settings, 'CSS_MAP', False)
+        self.include_paths = getattr(settings, 'SCSS_INCLUDE_PATHS', [])
         self.source_cache = {}
 
     def check(self, **kwargs):
@@ -81,6 +82,8 @@ class ScssFinder(FileSystemFinder):
                     sass_args = {'filename': str(scss_file)}
                     if self.css_map:
                         sass_args['source_map_filename'] = str(mappath)
+                    if self.include_paths:
+                        sass_args['include_paths'] = self.include_paths
                     if self.output_style:
                         sass_args['output_style'] = self.output_style
                     result = sass.compile(**sass_args)

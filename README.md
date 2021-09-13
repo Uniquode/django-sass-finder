@@ -27,6 +27,9 @@ SCSS_COMPILE = [                # a list of filename pattern to search for withi
     'site.scss',                # default is **/*,css (all scss source files in and below SCSS_ROOT)                                                                                                                                                                                                                                                                                            
     'admin/admin.scss',
 ]
+SCSS_INCLUDE_PATHS = [          # optional: scss compiler include paths (default = empty)
+    'node_modules'
+]
 CSS_STYLE = 'compressed'            # optional: output format 'nested', 'expanded','compact','compressed'
 CSS_MAP = True                      # optional: generate a source map
 CSS_COMPILE_DIR = BASE_DIR / 'static' / 'css'   # The target directories for the compiled .css

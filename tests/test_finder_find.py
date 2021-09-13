@@ -79,6 +79,7 @@ def basedir():
         with override_settings(
                 SCSS_ROOT=scss_root,
                 SCSS_COMPILE=scss_compile,
+                SCSS_INCLUDE_PATHS=['node_modules'],
                 CSS_COMPILE_DIR=css_compile_dir,
                 STATICFILES_DIRS=[staticfiles_dir],
                 CSS_STYLE='compact',
