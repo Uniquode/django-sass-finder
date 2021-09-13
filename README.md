@@ -22,14 +22,16 @@ The following additional (with examples) settings are used and required by this 
 ```python
 BASE_DIR = ...
 
-SCSS_ROOT = BASE_DIR / 'scss'       # where the .scss files are sourced
-SCSS_COMPILE = [                    # a list of filename pattern to search for within SCSS_ROOT
-    'site.scss',                    # default is **/*,css (all scss source files in and below SCSS_ROOT)                                                                                                                                                                                                                                                                                            
+SCSS_ROOT = BASE_DIR / 'scss'   # where the .scss files are sourced
+SCSS_COMPILE = [                # a list of filename pattern to search for within SCSS_ROOT
+    'site.scss',                # default is **/*,css (all scss source files in and below SCSS_ROOT)                                                                                                                                                                                                                                                                                            
     'admin/admin.scss',
 ]
+CSS_STYLE = 'compressed'            # optional: output format 'nested', 'expanded','compact','compressed'
+CSS_MAP = True                      # optional: generate a source map
 CSS_COMPILE_DIR = BASE_DIR / 'static' / 'css'   # The target directories for the compiled .css
-STATICFILES_ROOT = [                            # this must be at or above the CSS_COMPILE_DIR
-    BASE_DIR / 'static'
+STATICFILES_ROOT = [                            # this should be at or above the CSS_COMPILE_DIR
+    BASE_DIR / 'static'                         # but targetting {app}/static should also work
 ]
 ```
 

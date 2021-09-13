@@ -8,6 +8,10 @@ from django.conf import settings
 from django.contrib.staticfiles.finders import FileSystemFinder
 from django.core.checks import Error
 
+__all__ = (
+    'ScssFinder',
+)
+
 
 class ScssFinder(FileSystemFinder):
     """
@@ -19,7 +23,8 @@ class ScssFinder(FileSystemFinder):
         self.scss_compile = getattr(settings, 'SCSS_COMPILE', ['**/*.scss'])
         self.root = Path(settings.SCSS_ROOT)
         self.css_compile_dir = Path(settings.CSS_COMPILE_DIR)
-        self.output_style = getattr(settings, 'SCSS_STYLE', 'compressed')
+        self.output_style = getattr(settings, 'CSS_STYLE', '')
+        self.css_map = getattr(settings, 'CSS_MAP', False)
         self.source_cache = {}
 
     def check(self, **kwargs):
@@ -70,12 +75,20 @@ class ScssFinder(FileSystemFinder):
                     pass
 
                 outpath = self.output_path(scss_file, makedirs=True)
+                mappath = outpath.parent / (outpath.stem + '.map')
                 # generate the css
                 with outpath.open('w+') as outfile:
-                    outfile.write(sass.compile(
-                        filename=str(scss_file),
-                        output_style=self.output_style
-                    ))
+                    sass_args = {'filename': str(scss_file)}
+                    if self.css_map:
+                        sass_args['source_map_filename'] = str(mappath)
+                    if self.output_style:
+                        sass_args['output_style'] = self.output_style
+                    result = sass.compile(**sass_args)
+                    if isinstance(result, tuple):
+                        # if source map was requested, sass.compile returns a tuple: result, source map
+                        # we're not really interested in the source map other than generating it
+                        result, _ = result
+                    outfile.write(result)
                 # add to or update the cache
                 self.source_cache[scss_file] = scss_stat.st_mtime
 
