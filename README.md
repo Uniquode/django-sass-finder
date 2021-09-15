@@ -1,9 +1,9 @@
-# django_sass_finder
-a Django finder that compiles Sass files
+# Django Sass Finder
+A static files finder for Django that compiles Sass files
 
-## installation
+## Installation
 ### WARNING: MAKE SURE YOU HAVE NO SASS PACKAGES INSTALLED (other than libsass)!
-run `pip install django_sass_finder` to add this module to your virtualenv,
+Run `pip install django_sass_finder` to add this module to your virtualenv,
 then add the finder to the list your static file finders as follows:
 
 ```python
@@ -41,7 +41,7 @@ STATICFILES_ROOT = [                            # this should be at or above the
 `BASE_DIR` and variants above are `pathlib.Path` objects, but path strings can also be used.
 
 
-## usage
+## Usage
 This module dynamically compiles to target .css files, and recompiles them on demand whenever
 they are updated.
 
@@ -49,5 +49,5 @@ The `collectstatic` management command compiles these, and lets the `FilesystemF
 them to STATIC_ROOT. The development server is perfectly able to serve these from
 STATICFILES_ROOT without the need to `collectstatic`.
 
-## license
-this package is licensed under the MIT license.
+## License
+This package is licensed under the MIT license.
