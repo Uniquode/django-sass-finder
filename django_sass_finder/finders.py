@@ -1,21 +1,73 @@
-from django.conf import settings
-from django.contrib.staticfiles.finders import BaseFinder
-from django.core.files.storage import FileSystemStorage
-from django.core.checks import Error
+# -*- coding: utf-8 -*-
+import stat
+from pathlib import Path
+
 import sass
+from django.apps import apps
+
+from django.conf import settings
+from django.contrib.staticfiles.finders import FileSystemFinder, AppDirectoriesFinder, BaseFinder
+from django.core.checks import Error
+from django.core.files.storage import FileSystemStorage
+
+__all__ = (
+    'ScssFinder',
+)
+
 
 class ScssFinder(BaseFinder):
     """
-    Finds .scss files specified in SCSS_ROOT and SCSS_COMPILE settings.
+    Finds .scss files specified in SCSS_ROOT and SCSS_COMPILE settings with globs.
     """
 
-    def __init__(self, *_args, **_kwargs):
+    def _path_is_parent(self, path: Path) -> bool:
         try:
-            self.scss_compile = settings.SCSS_COMPILE
-        except AttributeError:
-            self.scss_compile = []
-        self.root = settings.SCSS_ROOT
-        self.storage = FileSystemStorage(settings.CSS_COMPILE_DIR)
+            self.css_compile_dir.relative_to(path)
+            return True
+        except ValueError:
+            return False
+
+    def _path_in_staticfiles(self):
+        for static_dir in getattr(settings, 'STATICFILES_DIRS', []):
+            if self._path_is_parent(Path(static_dir).resolve()):
+                self._serve_static = getattr(settings, 'CSS_SERVE_STATIC', False)
+                return
+
+    def _path_in_appdirectories(self):
+        if not self.apps_static_checked and apps.apps_ready and self._serve_static:
+            try:
+                app_configs = apps.get_app_configs()
+                for app_config in app_configs:
+                    if self._path_is_parent(Path(app_config.path) / AppDirectoriesFinder.source_dir):
+                        self._serve_static = getattr(settings, 'CSS_SERVE_STATIC', False)
+                        return
+            finally:
+                self.apps_static_checked = True
+
+    def __init__(self, app_names=None, *args, **kwargs):
+        self.scss_compile = getattr(settings, 'SCSS_COMPILE', ['**/*.scss'])
+        self.root = Path(settings.SCSS_ROOT)
+        self.css_compile_dir = Path(settings.CSS_COMPILE_DIR).resolve()
+        self.output_style = getattr(settings, 'CSS_STYLE', '')
+        self.css_map = getattr(settings, 'CSS_MAP', False)
+        self.include_paths = getattr(settings, 'SCSS_INCLUDE_PATHS', [])
+        self.storage = FileSystemStorage(location=self.css_compile_dir)
+
+        # by default, we serve our own files
+        self._serve_static = True
+        # we can check staticfiles immediately
+        self._path_in_staticfiles()
+        # apps probably aren't ready yet
+        self.apps_static_checked = False
+        self._path_in_appdirectories()
+
+        self.source_cache = {}
+        self.files_cache = {}
+
+    @property
+    def serve_static(self):
+        self._path_in_appdirectories()
+        return self._serve_static
 
     def check(self, **kwargs):
         """
@@ -26,33 +78,95 @@ class ScssFinder(BaseFinder):
         errors = []
 
         for scss_item in self.scss_compile:
-            abspath = self.root / scss_item
-            if not abspath.exists() and not abspath.is_file():
+            for _ in self.root.glob(scss_item):
+                break
+            else:
                 errors.append(Error(
-                    f'{scss_item} is not a valid file.',
+                    f'{scss_item} returned no files in {self.scss_compile}.',
                     id='sass.E001'
                 ))
+
         return errors
+
+    def output_path(self, scss_file, makedirs=False):
+        # determine where the file will be generated, and ensure path exists if possible
+        outpath = self.css_compile_dir / scss_file.relative_to(self.root).parent
+        if makedirs:
+            outpath.mkdir(parents=True, exist_ok=True)
+        # add the filename to the output path
+        return outpath / (scss_file.stem + '.css')
+
+    def compile_scss(self):
+        # search for and compile all scss files
+        checked = []
+        self.files_cache.clear()
+        for scss_item in self.scss_compile:
+            for scss_file in self.root.glob(scss_item):
+                try:
+                    scss_stat = scss_file.stat()
+                except OSError:
+                    continue        # usually FileNotFoundError
+                if not stat.S_ISREG(scss_stat.st_mode):
+                    continue        # not is_file()
+
+                # mark this as checked
+                checked.append(scss_file)
+                # add it to the files cache
+                outpath = self.output_path(scss_file, makedirs=True)
+                relpath = outpath.relative_to(self.css_compile_dir)
+                self.files_cache[str(relpath)] = outpath
+                try:
+                    cached = self.source_cache[scss_file]
+                    if scss_stat.st_mtime == cached:
+                        continue        # unchanged, skip
+                except KeyError:
+                    pass
+
+                mappath = outpath.parent / (outpath.stem + '.map')
+                # generate the css
+                with outpath.open('w+') as outfile:
+                    sass_args = {'filename': str(scss_file)}
+                    if self.css_map:
+                        sass_args['source_map_filename'] = str(mappath)
+                    if self.include_paths:
+                        sass_args['include_paths'] = [str(path) for path in self.include_paths]
+                    if self.output_style:
+                        sass_args['output_style'] = self.output_style
+                    result = sass.compile(**sass_args)
+                    if isinstance(result, tuple):
+                        # if source map was requested, sass.compile returns a tuple: result, source map
+                        # we're not really interested in the source map other than generating it
+                        result, _ = result
+                    outfile.write(result)
+                # add to or update the cache
+                self.source_cache[scss_file] = scss_stat.st_mtime
+
+        # walk the cache and check for any previously present files
+        removed = [scss_file for scss_file, _ in self.source_cache.items() if scss_file not in checked]
+        # and remove them from cache and unlink the target files
+        for scss_file in removed:
+            del self.source_cache[scss_file]
+            outpath = self.output_path(scss_file)
+            try:
+                outpath.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def find(self, path, all=False):
         """
-        Look for files in SCSS_ROOT, and make their paths absolute.
+        Run the compiler and see if was collected
         """
-        if all:
-            return str([settings.CSS_COMPILE_DIR / path])
-        return str(settings.CSS_COMPILE_DIR / path)
+        self.compile_scss()
+        if self.serve_static and path in self.files_cache:
+            path = str(self.files_cache[path])
+            return [path] if all else path
+        return []
 
-    def list(self, _ignore_patterns):
+    def list(self, ignore_patterns):
         """
         Compile then list the .css files.
         """
-        for scss_item in self.scss_compile:
-            abspath = self.root / scss_item
-            if abspath.is_file():
-                abspath = self.root / scss_item
-                abspath_str = str(abspath)
-                outpath = settings.CSS_COMPILE_DIR / (abspath.stem + '.css')
-                with open(outpath, 'w+') as outfile:
-                    outfile.write(sass.compile(filename=abspath_str, output_style='compressed'))
-                print(settings.BASE_DIR)
-                yield abspath.stem + '.css', self.storage
+        self.compile_scss()
+        if self.serve_static and self.files_cache:
+            for path, _ in self.files_cache.items():
+                yield str(path), self.storage
