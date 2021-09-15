@@ -3,30 +3,71 @@ import stat
 from pathlib import Path
 
 import sass
+from django.apps import apps
 
 from django.conf import settings
-from django.contrib.staticfiles.finders import FileSystemFinder
+from django.contrib.staticfiles.finders import FileSystemFinder, AppDirectoriesFinder, BaseFinder
 from django.core.checks import Error
+from django.core.files.storage import FileSystemStorage
 
 __all__ = (
     'ScssFinder',
 )
 
 
-class ScssFinder(FileSystemFinder):
+class ScssFinder(BaseFinder):
     """
     Finds .scss files specified in SCSS_ROOT and SCSS_COMPILE settings with globs.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def _path_is_parent(self, path: Path) -> bool:
+        try:
+            self.css_compile_dir.relative_to(path)
+            return True
+        except ValueError:
+            return False
+
+    def _path_in_staticfiles(self):
+        for static_dir in getattr(settings, 'STATICFILES_DIRS', []):
+            if self._path_is_parent(Path(static_dir).resolve()):
+                self._serve_static = getattr(settings, 'CSS_SERVE_STATIC', False)
+                return
+
+    def _path_in_appdirectories(self):
+        if not self.apps_static_checked and apps.apps_ready and self.serve_static:
+            try:
+                app_configs = apps.get_app_configs()
+                for app_config in app_configs:
+                    if self._path_is_parent(Path(app_config.path) / AppDirectoriesFinder.source_dir):
+                        self._serve_static = getattr(settings, 'CSS_SERVE_STATIC', False)
+                        return
+            finally:
+                self.apps_static_checked = True
+
+    def __init__(self, app_names=None, *args, **kwargs):
         self.scss_compile = getattr(settings, 'SCSS_COMPILE', ['**/*.scss'])
         self.root = Path(settings.SCSS_ROOT)
-        self.css_compile_dir = Path(settings.CSS_COMPILE_DIR)
+        self.css_compile_dir = Path(settings.CSS_COMPILE_DIR).resolve()
         self.output_style = getattr(settings, 'CSS_STYLE', '')
         self.css_map = getattr(settings, 'CSS_MAP', False)
         self.include_paths = getattr(settings, 'SCSS_INCLUDE_PATHS', [])
+        self.storage = FileSystemStorage(location=self.css_compile_dir)
+
+        # by default, we serve our own files
+        self._serve_static = True
+        # we can check staticfiles immediately
+        self._path_in_staticfiles()
+        # apps probably aren't ready yet
+        self.apps_static_checked = False
+        self._path_in_appdirectories()
+
         self.source_cache = {}
+        self.files_cache = {}
+
+    @property
+    def serve_static(self):
+        self._path_in_appdirectories()
+        return self._serve_static
 
     def check(self, **kwargs):
         """
@@ -44,6 +85,7 @@ class ScssFinder(FileSystemFinder):
                     f'{scss_item} returned no files in {self.scss_compile}.',
                     id='sass.E001'
                 ))
+
         return errors
 
     def output_path(self, scss_file, makedirs=False):
@@ -57,6 +99,7 @@ class ScssFinder(FileSystemFinder):
     def compile_scss(self):
         # search for and compile all scss files
         checked = []
+        self.files_cache.clear()
         for scss_item in self.scss_compile:
             for scss_file in self.root.glob(scss_item):
                 try:
@@ -68,6 +111,10 @@ class ScssFinder(FileSystemFinder):
 
                 # mark this as checked
                 checked.append(scss_file)
+                # add it to the files cache
+                outpath = self.output_path(scss_file, makedirs=True)
+                relpath = outpath.relative_to(self.css_compile_dir)
+                self.files_cache[str(relpath)] = outpath
                 try:
                     cached = self.source_cache[scss_file]
                     if scss_stat.st_mtime == cached:
@@ -75,7 +122,6 @@ class ScssFinder(FileSystemFinder):
                 except KeyError:
                     pass
 
-                outpath = self.output_path(scss_file, makedirs=True)
                 mappath = outpath.parent / (outpath.stem + '.map')
                 # generate the css
                 with outpath.open('w+') as outfile:
@@ -108,14 +154,19 @@ class ScssFinder(FileSystemFinder):
 
     def find(self, path, all=False):
         """
-        Run the compiler and leave it up to the filesystemfinder to locate it
+        Run the compiler and see if was collected
         """
         self.compile_scss()
-        return super().find(path, all=all)
+        if self.serve_static and path in self.files_cache:
+            path = str(self.files_cache[path])
+            return [path] if all else path
+        return []
 
     def list(self, ignore_patterns):
         """
         Compile then list the .css files.
         """
         self.compile_scss()
-        return super().list(ignore_patterns)
+        if self.serve_static and self.files_cache:
+            for path, _ in self.files_cache:
+                yield str(path), self.storage

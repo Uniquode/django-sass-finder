@@ -70,7 +70,8 @@ def basedir():
         staticfiles_dir = base_dir / 'static'
         scss_root = base_dir / 'scss'
         scss_compile = ['**/*.scss']
-        css_compile_dir = staticfiles_dir / 'css'
+        # use a separate storage for our files (not staticfiles or appdirs)
+        css_compile_dir_default = base_dir / 'output' / 'css'
         static_root = base_dir / 'static_root'
         for filename, scss_content in FIXTURE_CONTENT.items():
             scss_file: Path = scss_root / filename
@@ -80,7 +81,7 @@ def basedir():
                 SCSS_ROOT=scss_root,
                 SCSS_COMPILE=scss_compile,
                 SCSS_INCLUDE_PATHS=[base_dir / 'node_modules'],
-                CSS_COMPILE_DIR=css_compile_dir,
+                CSS_COMPILE_DIR=css_compile_dir_default,
                 STATICFILES_DIRS=[staticfiles_dir],
                 CSS_STYLE='compact',
                 CSS_MAP=True,
@@ -93,12 +94,17 @@ def test_finder_list_all(basedir):
     for filename in FIXTURE_CONTENT.keys():
         # change ext to .css
         filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-        static_name = f"css/{filename}"
-        found = f.find(static_name, all=True)
-        # returns the absolute path of the found file(s)
+
+        f._serve_static = True
+        found = f.find(filename, all=True)
         assert isinstance(found, list)
         assert len(found) == 1
-        assert found[0].endswith(static_name)
+        assert str(found[0]).endswith(filename)
+
+        f._serve_static = False
+        found = f.find(filename, all=True)
+        assert isinstance(found, list)
+        assert len(found) == 0
 
 
 def test_finder_find_not_all(basedir):
@@ -106,11 +112,18 @@ def test_finder_find_not_all(basedir):
     for filename in FIXTURE_CONTENT.keys():
         # change ext to .css
         filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-        static_name = f"css/{filename}"
-        found = f.find(static_name, all=False)
+
+        f._serve_static = True
+        found = f.find(filename, all=False)
         # returns the absolute path of the found file(s)
         assert isinstance(found, str)
-        assert found.endswith(static_name)
+        assert str(found).endswith(filename)
+
+        f._serve_static = False
+        found = f.find(filename, all=False)
+        # returns the absolute path of the found file(s)
+        assert isinstance(found, list)
+        assert not found
 
 
 def test_finder_find_all_no_matching_paths_returns_empty_list(basedir):
@@ -136,9 +149,8 @@ def test_finder_find_recompiles_updated(basedir):
     for filename in FIXTURE_CONTENT.keys():
         # change ext to .css
         filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-        static_name = f"css/{filename}"
         # use find to kick off a scss_compile
-        for found_file in f.find(static_name, all=True):
+        for found_file in f.find(filename, all=True):
             found_path = Path(found_file)
             modified_times[found_path] = found_path.stat().st_mtime
 
@@ -160,9 +172,8 @@ def test_finder_find_recompiles_updated(basedir):
     for filename in FIXTURE_CONTENT.keys():
         # change ext to .css
         filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-        static_name = f"css/{filename}"
         # use find to kick off a scss_compile
-        for found_file in f.find(static_name, all=True):
+        for found_file in f.find(filename, all=True):
             found_path = Path(found_file)
             if first:
                 assert modified_times[found_path] != found_path.stat().st_mtime
