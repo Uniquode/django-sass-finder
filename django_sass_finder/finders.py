@@ -168,5 +168,5 @@ class ScssFinder(BaseFinder):
         """
         self.compile_scss()
         if self.serve_static and self.files_cache:
-            for path, _ in self.files_cache:
+            for _, path in self.files_cache.items():
                 yield str(path), self.storage
