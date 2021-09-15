@@ -34,7 +34,7 @@ class ScssFinder(BaseFinder):
                 return
 
     def _path_in_appdirectories(self):
-        if not self.apps_static_checked and apps.apps_ready and self.serve_static:
+        if not self._apps_static_checked and apps.apps_ready and self.serve_static:
             try:
                 app_configs = apps.get_app_configs()
                 for app_config in app_configs:
