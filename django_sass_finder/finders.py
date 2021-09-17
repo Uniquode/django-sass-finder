@@ -114,7 +114,7 @@ class ScssFinder(BaseFinder):
                 # add it to the files cache
                 outpath = self.output_path(scss_file, makedirs=True)
                 relpath = outpath.relative_to(self.css_compile_dir)
-                self.files_cache[str(relpath)] = outpath
+                self.files_cache[relpath.as_posix()] = outpath
                 try:
                     cached = self.source_cache[scss_file]
                     if scss_stat.st_mtime == cached:
@@ -158,7 +158,7 @@ class ScssFinder(BaseFinder):
         """
         self.compile_scss()
         if self.serve_static and path in self.files_cache:
-            path = str(self.files_cache[path])
+            path = self.files_cache[path].as_posix()
             return [path] if all else path
         return []
 
