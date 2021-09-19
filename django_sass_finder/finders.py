@@ -124,18 +124,20 @@ class ScssFinder(BaseFinder):
                 relpath = outpath.relative_to(self.css_compile_dir)
                 self.files_cache[relpath.as_posix()] = outpath
                 try:
-                    cached = self.source_cache[scss_file]
-                    if scss_stat.st_mtime == cached:
+                    cached_mtime = self.source_cache[scss_file]
+                    if scss_stat.st_mtime == cached_mtime:
                         continue        # unchanged, skip
-
-                    out_stat = path_stat(outpath)
-                    map_stat = path_stat(mappath)
-                    if out_stat is not None and out_stat.st_mtime > cached:
-                        # output css file is up to date, if we reqested a map, make sure it also does not need update
-                        if not self.css_map or (map_stat is not None and map_stat.st_mtime > cached):
-                            continue
                 except KeyError:
                     pass
+
+                # new timestamp
+                cached_mtime = scss_stat.st_mtime
+                out_stat = path_stat(outpath)
+                map_stat = path_stat(mappath)
+                if out_stat is not None and out_stat.st_mtime > cached_mtime:
+                    # output css file is up to date, if we reqested a map, make sure it also does not need update
+                    if not self.css_map or (map_stat is not None and map_stat.st_mtime > cached_mtime):
+                        continue
 
                 # generate the css
                 with outpath.open('w+') as outfile:
@@ -153,7 +155,7 @@ class ScssFinder(BaseFinder):
                         result, _ = result
                     outfile.write(result)
                 # add to or update the cache
-                self.source_cache[scss_file] = scss_stat.st_mtime
+                self.source_cache[scss_file] = cached_mtime
 
         # walk the cache and check for any previously present files
         removed = [scss_file for scss_file, _ in self.source_cache.items() if scss_file not in checked]
