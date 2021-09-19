@@ -137,6 +137,7 @@ class ScssFinder(BaseFinder):
                 if out_stat is not None and out_stat.st_mtime > cached_mtime:
                     # output css file is up to date, if we reqested a map, make sure it also does not need update
                     if not self.css_map or (map_stat is not None and map_stat.st_mtime > cached_mtime):
+                        self.source_cache[scss_file] = cached_mtime
                         continue
 
                 # generate the css
