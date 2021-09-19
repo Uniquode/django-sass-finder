@@ -6,7 +6,7 @@ import sass
 from django.apps import apps
 
 from django.conf import settings
-from django.contrib.staticfiles.finders import FileSystemFinder, AppDirectoriesFinder, BaseFinder
+from django.contrib.staticfiles.finders import AppDirectoriesFinder, BaseFinder
 from django.core.checks import Error
 from django.core.files.storage import FileSystemStorage
 
@@ -100,12 +100,18 @@ class ScssFinder(BaseFinder):
         # search for and compile all scss files
         checked = []
         self.files_cache.clear()
+
+        def path_stat(path):
+            try:
+                return path.stat()
+            except OSError:
+                pass    # usually FileNotFoundError
+
         for scss_item in self.scss_compile:
             for scss_file in self.root.glob(scss_item):
-                try:
-                    scss_stat = scss_file.stat()
-                except OSError:
-                    continue        # usually FileNotFoundError
+                scss_stat = path_stat(scss_file)
+                if not scss_stat:
+                    continue
                 if not stat.S_ISREG(scss_stat.st_mode):
                     continue        # not is_file()
 
@@ -113,16 +119,24 @@ class ScssFinder(BaseFinder):
                 checked.append(scss_file)
                 # add it to the files cache
                 outpath = self.output_path(scss_file, makedirs=True)
+                mappath = outpath.parent / (outpath.stem + '.map')
+
                 relpath = outpath.relative_to(self.css_compile_dir)
                 self.files_cache[relpath.as_posix()] = outpath
                 try:
                     cached = self.source_cache[scss_file]
                     if scss_stat.st_mtime == cached:
                         continue        # unchanged, skip
+
+                    out_stat = path_stat(outpath)
+                    map_stat = path_stat(mappath)
+                    if out_stat is not None and out_stat.st_mtime > cached:
+                        # output css file is up to date, if we reqested a map, make sure it also does not need update
+                        if not self.css_map or (map_stat is not None and map_stat.st_mtime > cached):
+                            continue
                 except KeyError:
                     pass
 
-                mappath = outpath.parent / (outpath.stem + '.map')
                 # generate the css
                 with outpath.open('w+') as outfile:
                     sass_args = {'filename': str(scss_file)}
