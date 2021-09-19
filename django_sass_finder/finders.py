@@ -47,7 +47,8 @@ class ScssFinder(BaseFinder):
     def __init__(self, app_names=None, *args, **kwargs):
         self.scss_compile = getattr(settings, 'SCSS_COMPILE', ['**/*.scss'])
         self.root = Path(settings.SCSS_ROOT)
-        self.css_compile_dir = Path(settings.CSS_COMPILE_DIR).resolve()
+        css_compile_dir = getattr(settings, 'CSS_COMPILE_DIR', self.root)
+        self.css_compile_dir = Path(css_compile_dir).resolve()
         self.output_style = getattr(settings, 'CSS_STYLE', '')
         self.css_map = getattr(settings, 'CSS_MAP', False)
         self.include_paths = getattr(settings, 'SCSS_INCLUDE_PATHS', [])

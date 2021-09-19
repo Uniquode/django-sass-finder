@@ -32,7 +32,7 @@ SCSS_INCLUDE_PATHS = [          # optional: scss compiler include paths (default
 ]
 CSS_STYLE = 'compressed'            # optional: output format 'nested', 'expanded','compact','compressed'
 CSS_MAP = True                      # optional: generate a source map
-CSS_COMPILE_DIR = BASE_DIR / 'static' / 'css'   # The target directories for the compiled .css
+CSS_COMPILE_DIR = BASE_DIR / 'static' / 'css'   # optional: The target directories for the compiled .css
 STATICFILES_ROOT = [                            # this should be at or above the CSS_COMPILE_DIR
     BASE_DIR / 'static'                         # but targetting {app}/static should also work
 ]
@@ -40,14 +40,18 @@ STATICFILES_ROOT = [                            # this should be at or above the
 
 `BASE_DIR` and variants above are `pathlib.Path` objects, but path strings can also be used.
 
+If CSS_COMPILE_DIR is not set, the SCSS_ROOT is used and css (and map) files are generated next to the
+scss source files.
 
 ## Usage
 This module dynamically compiles to target .css files, and recompiles them on demand whenever
-they are updated.
+the source files are updated.
 
-The `collectstatic` management command compiles these, and lets the `FilesystemFinder` transfer
-them to STATIC_ROOT. The development server is perfectly able to serve these from
-STATICFILES_ROOT without the need to `collectstatic`.
+The `collectstatic` management command compiles these and copies them into STATIC_ROOT along with
+the usual files from STATICFILES_DIRS and app `static` directories.
+
+The development server is perfectly able to serve these from STATICFILES_ROOT without the need
+to run `collectstatic`.
 
 ## License
 This package is licensed under the MIT license.
