@@ -112,7 +112,6 @@ jobs:
     name: Publish to PyPI
     needs: [check, build]
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       id-token: write     # trusted publishing; nothing else needs it
     steps:
