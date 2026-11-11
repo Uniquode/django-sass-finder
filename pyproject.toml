@@ -1,7 +1,7 @@
 [project]
-name = "django-sass-finder"
+name = "django-dart-sass-finder"
 version = "3.0.0"
-description = "A Django finder that compiles Sass files"
+description = "A Django staticfiles finder that compiles Sass with Dart Sass. Continues django-sass-finder: same settings, new compiler."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -41,7 +41,7 @@ libsass = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Uniquode/django_sass_finder"
+Repository = "https://github.com/Uniquode/django-sass-finder"
 
 [dependency-groups]
 dev = [

@@ -2,6 +2,10 @@
 
 ## 3.0.0
 
+Published on PyPI as `django-dart-sass-finder` (the original `django-sass-finder` is a separate
+project). The import name is unchanged: `django_sass_finder`, so existing settings keep working.
+Uninstall `django-sass-finder` first, as both install the same module.
+
 Dart Sass support, a new compiler interface, fixes for current Django, and a project refresh
 bringing packaging, dependencies and tests up to date.
 
@@ -10,9 +14,13 @@ bringing packaging, dependencies and tests up to date.
 - **Dart Sass is now the default compiler** and supports the modern module system (`@use`,
   `@forward`). Install it into the virtualenv with `python -m django_sass_finder.install`.
   LibSass is deprecated upstream and is now an optional backend:
-  `pip install "django_sass_finder[libsass]"` and `SCSS_COMPILER = 'libsass'`.
+  `pip install "django-dart-sass-finder[libsass]"` and `SCSS_COMPILER = 'libsass'`.
 - `CSS_STYLE` accepts `expanded` and `compressed` with Dart Sass; `nested` and `compact` remain
   libsass-only. Django's system checks report an unsupported style (`sass.E003`).
+- The default output style is Dart Sass's `expanded`; libsass defaulted to `nested`. Set
+  `CSS_STYLE` to keep a specific format.
+- Compile errors are raised as `django_sass_finder.compilers.CompileError` rather than
+  `sass.CompileError`.
 - Source maps are now written as `{name}.css.map` (previously `{name}.map`).
 - Files whose name starts with an underscore are Sass partials and are no longer compiled on
   their own.
@@ -28,6 +36,10 @@ bringing packaging, dependencies and tests up to date.
   `pyproject.toml`.
 - Pluggable compiler backends (`SCSS_COMPILER`, `SCSS_EXECUTABLE`), including custom ones via a
   dotted path to a `django_sass_finder.compilers.Compiler` subclass.
+- Without `CSS_MAP`, a restarted server compiles every file once, because it cannot tell what an
+  earlier run loaded; with `CSS_MAP` it reads the dependencies back from the source maps.
+- Dart Sass warnings (for example the deprecation of `@import`) are logged to the
+  `django_sass_finder` logger at warning level.
 - `SCSS_RESCAN_INTERVAL` setting. Lookups arrive in bursts; sources are scanned at most this often.
 - System check `sass.E002` for a missing or unusable compiler.
 - GitHub Actions workflow (`.github/workflows/test.yml`) running the test suite across Python

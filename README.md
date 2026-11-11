@@ -1,10 +1,18 @@
-# Django Sass Finder
+# Django Dart Sass Finder
 A static files finder for Django that compiles Sass files
+
+This continues the original [`django-sass-finder`](https://pypi.org/project/django-sass-finder/),
+which no longer works with current Django or Python. The settings and the finder to configure are
+the same (the module is still `django_sass_finder`); what is new is the compiler, which is now
+Dart Sass. See the [changelog](CHANGELOG.md) for what to check when upgrading.
 
 ## Installation
 ### WARNING: MAKE SURE YOU HAVE NO OTHER SASS PACKAGES INSTALLED!
-Run `pip install django_sass_finder` to add this module to your virtualenv, then install the
-Sass compiler (see below), and add the finder to the list of your static file finders:
+Run `pip install django-dart-sass-finder` to add this module to your virtualenv (it is imported as
+`django_sass_finder`), then install the Sass compiler (see below), and add the finder to the list of
+your static file finders. If you used the original `django-sass-finder` package, uninstall it first:
+it installs a module of the same name.
+
 
 ```python
 STATICFILES_FINDERS = [
@@ -45,7 +53,7 @@ Run the install command again after changing the version (and in CI, Docker buil
 #### LibSass (legacy)
 [LibSass](https://sass-lang.com/blog/libsass-is-deprecated/) is deprecated, does not support `@use`
 and has known security issues. It is still available to ease migration:
-`pip install "django_sass_finder[libsass]"` and set `SCSS_COMPILER = 'libsass'`.
+`pip install "django-dart-sass-finder[libsass]"` and set `SCSS_COMPILER = 'libsass'`.
 
 ## Settings
 The following additional (with examples) settings are used by this staticfiles finder:

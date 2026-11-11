@@ -59,7 +59,7 @@ wheels = [
 ]
 
 [[package]]
-name = "django-sass-finder"
+name = "django-dart-sass-finder"
 version = "3.0.0"
 source = { editable = "." }
 dependencies = [
