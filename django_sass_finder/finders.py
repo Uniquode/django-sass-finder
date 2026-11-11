@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
+import logging
 import stat
+import threading
+import time
 from pathlib import Path
 
-import sass
 from django.apps import apps
 
 from django.conf import settings
 from django.contrib.staticfiles.finders import AppDirectoriesFinder, BaseFinder
 from django.core.checks import Error
+from django.core.exceptions import ImproperlyConfigured
 from django.core.files.storage import FileSystemStorage
+
+from .compilers import get_compiler, map_path, read_map_sources
+
+logger = logging.getLogger(__name__)
 
 __all__ = (
     'ScssFinder',
@@ -53,6 +60,21 @@ class ScssFinder(BaseFinder):
         self.css_map = getattr(settings, 'CSS_MAP', False)
         self.include_paths = getattr(settings, 'SCSS_INCLUDE_PATHS', [])
         self.storage = FileSystemStorage(location=self.css_compile_dir)
+        # the compiler backend: 'dart' (default), 'libsass' or a dotted path to a Compiler class
+        self.compiler_name = getattr(settings, 'SCSS_COMPILER', 'dart')
+        executable = getattr(settings, 'SCSS_EXECUTABLE', None)
+        try:
+            self.compiler = get_compiler(
+                self.compiler_name, **({'executable': str(executable)} if executable else {}))
+            self.compiler_error = None
+        except (ImportError, TypeError) as exc:
+            # reported by check() (sass.E004), or raised when the finder is first used
+            self.compiler = None
+            self.compiler_error = exc
+        # lookups arrive in bursts (one per static file on a page); scan the sources at most this often
+        self.rescan_interval = getattr(settings, 'SCSS_RESCAN_INTERVAL', 0.5)
+        self._lock = threading.RLock()
+        self._last_scan = None
 
         # by default, we serve our own files
         self._serve_static = True
@@ -62,7 +84,9 @@ class ScssFinder(BaseFinder):
         self.apps_static_checked = False
         self._path_in_appdirectories()
 
+        # scss file -> {file it was compiled from or read while compiling: its mtime then}
         self.source_cache = {}
+        # path as requested through staticfiles (css) -> compiled file
         self.files_cache = {}
 
     @property
@@ -74,20 +98,48 @@ class ScssFinder(BaseFinder):
         """
         Checks if ScssFinder is configured correctly.
 
-        SCSS_COMPILE should contain valid files.
+        SCSS_COMPILE should contain valid files, and the compiler must be usable.
         """
         errors = []
 
         for scss_item in self.scss_compile:
-            for _ in self.root.glob(scss_item):
-                break
-            else:
+            matches = list(self.root.glob(scss_item))
+            if not matches:
                 errors.append(Error(
                     f'{scss_item} returned no files in {self.scss_compile}.',
                     id='sass.E001'
                 ))
+            elif all(self.is_partial(match) for match in matches):
+                errors.append(Error(
+                    f'{scss_item} matches only Sass partials (names starting with "_"), '
+                    f'which are not compiled on their own.',
+                    id='sass.E001'
+                ))
+
+        if self.compiler is None:
+            errors.append(Error(
+                f'SCSS_COMPILER {self.compiler_name!r} could not be loaded: {self.compiler_error}',
+                hint="Use 'dart', 'libsass', or the dotted path of a django_sass_finder.compilers.Compiler class.",
+                id='sass.E004'
+            ))
+            return errors
+
+        errors.extend(self.compiler.check())
+
+        styles = self.compiler.output_styles
+        if self.output_style and styles and self.output_style not in styles:
+            errors.append(Error(
+                f'CSS_STYLE {self.output_style!r} is not supported by the {self.compiler_name!r} compiler.',
+                hint=f'Use one of: {", ".join(styles)}.',
+                id='sass.E003'
+            ))
 
         return errors
+
+    @staticmethod
+    def is_partial(path):
+        """A partial is only meant to be loaded by other files, so it is not compiled on its own."""
+        return path.name.startswith('_')
 
     def output_path(self, scss_file, makedirs=False):
         # determine where the file will be generated, and ensure path exists if possible
@@ -97,87 +149,131 @@ class ScssFinder(BaseFinder):
         # add the filename to the output path
         return outpath / (scss_file.stem + '.css')
 
-    def compile_scss(self):
-        # search for and compile all scss files
-        checked = []
-        self.files_cache.clear()
+    @staticmethod
+    def _stat(path):
+        try:
+            return path.stat()
+        except OSError:
+            return None     # usually FileNotFoundError
 
-        def path_stat(path):
-            try:
-                return path.stat()
-            except OSError:
-                pass    # usually FileNotFoundError
+    def _snapshot(self, dependencies):
+        """Current modification times of the files a compilation read."""
+        mtimes = {}
+        for path in dependencies:
+            path_stat = self._stat(path)
+            if path_stat is not None:
+                mtimes[path] = path_stat.st_mtime
+        return mtimes
+
+    def _is_current(self, scss_file, outpath):
+        """True if outpath is up to date with its source and everything that source reads."""
+        out_stat = self._stat(outpath)
+        if out_stat is None:
+            return False
+        mapfile = map_path(outpath)
+        if self.css_map and self._stat(mapfile) is None:
+            return False
+
+        known = self.source_cache.get(scss_file)
+        if known is not None:
+            return all(
+                (path_stat := self._stat(path)) is not None and path_stat.st_mtime == mtime
+                for path, mtime in known.items()
+            )
+
+        # not compiled by this process yet: the source map from an earlier run, if any,
+        # tells which files were read. Without one we cannot know, so we must compile.
+        dependencies = read_map_sources(mapfile) if self.css_map else None
+        if not dependencies:
+            return False
+        mtimes = self._snapshot(dependencies | {scss_file})
+        if len(mtimes) != len(dependencies | {scss_file}):
+            return False        # something it read has gone
+        if any(mtime >= out_stat.st_mtime for mtime in mtimes.values()):
+            return False
+        self.source_cache[scss_file] = mtimes
+        return True
+
+    def _compile_file(self, scss_file, outpath):
+        # what we already knew it reads, as it was before compiling
+        before = self._snapshot(set(self.source_cache.get(scss_file, ())) | {scss_file})
+        dependencies = self.compiler.compile(
+            scss_file, outpath,
+            source_map=self.css_map,
+            output_style=self.output_style,
+            include_paths=[Path(path) for path in self.include_paths],
+        )
+        # record only after a successful compile, so a failing file is retried next time
+        wanted = dependencies | {scss_file}
+        after = self._snapshot(wanted)
+        if len(after) != len(wanted) or any(after[path] != mtime for path, mtime in before.items() if path in after):
+            # something it read was changed or removed while compiling, so the output may be
+            # out of date already: forget it was compiled, and compile again next time
+            logger.debug('%s changed while it was being compiled', scss_file)
+            self.source_cache.pop(scss_file, None)
+        else:
+            self.source_cache[scss_file] = after
+
+    def compile_scss(self):
+        """
+        Search for and compile all scss files that need it.
+
+        Lookups arrive in bursts, so a scan is skipped if one finished less than
+        SCSS_RESCAN_INTERVAL seconds ago.
+        """
+        if self.compiler is None:
+            raise ImproperlyConfigured(
+                f'SCSS_COMPILER {self.compiler_name!r} could not be loaded: {self.compiler_error}')
+        with self._lock:
+            if self._last_scan is not None and time.monotonic() - self._last_scan < self.rescan_interval:
+                return
+            self._scan()
+            self._last_scan = time.monotonic()
+
+    def _scan(self):
+        checked = set()
+        files_cache = {}
 
         for scss_item in self.scss_compile:
             for scss_file in self.root.glob(scss_item):
-                scss_stat = path_stat(scss_file)
-                if not scss_stat:
+                if scss_file in checked:
+                    continue        # matched by more than one pattern
+                if self.is_partial(scss_file):
                     continue
-                if not stat.S_ISREG(scss_stat.st_mode):
+                scss_stat = self._stat(scss_file)
+                if not scss_stat or not stat.S_ISREG(scss_stat.st_mode):
                     continue        # not is_file()
 
-                # mark this as checked
-                checked.append(scss_file)
-                # add it to the files cache
+                checked.add(scss_file)
                 outpath = self.output_path(scss_file, makedirs=True)
-                mappath = outpath.parent / (outpath.stem + '.map')
+                files_cache[outpath.relative_to(self.css_compile_dir).as_posix()] = outpath
+                if not self._is_current(scss_file, outpath):
+                    self._compile_file(scss_file, outpath)
 
-                relpath = outpath.relative_to(self.css_compile_dir)
-                self.files_cache[relpath.as_posix()] = outpath
-                try:
-                    cached_mtime = self.source_cache[scss_file]
-                    if scss_stat.st_mtime == cached_mtime:
-                        continue        # unchanged, skip
-                except KeyError:
-                    pass
-
-                # new timestamp
-                cached_mtime = scss_stat.st_mtime
-                out_stat = path_stat(outpath)
-                map_stat = path_stat(mappath)
-                if out_stat is not None and out_stat.st_mtime > cached_mtime:
-                    # output css file is up to date, if we reqested a map, make sure it also does not need update
-                    if not self.css_map or (map_stat is not None and map_stat.st_mtime > cached_mtime):
-                        self.source_cache[scss_file] = cached_mtime
-                        continue
-
-                # generate the css
-                with outpath.open('w+') as outfile:
-                    sass_args = {'filename': str(scss_file)}
-                    if self.css_map:
-                        sass_args['source_map_filename'] = str(mappath)
-                    if self.include_paths:
-                        sass_args['include_paths'] = [str(path) for path in self.include_paths]
-                    if self.output_style:
-                        sass_args['output_style'] = self.output_style
-                    result = sass.compile(**sass_args)
-                    if isinstance(result, tuple):
-                        # if source map was requested, sass.compile returns a tuple: result, source map
-                        # we're not really interested in the source map other than generating it
-                        result, _ = result
-                    outfile.write(result)
-                # add to or update the cache
-                self.source_cache[scss_file] = cached_mtime
+        # swap in the new mapping in one go: lookups outside the lock never see a half built one
+        self.files_cache = files_cache
 
         # walk the cache and check for any previously present files
-        removed = [scss_file for scss_file, _ in self.source_cache.items() if scss_file not in checked]
+        removed = [scss_file for scss_file in self.source_cache if scss_file not in checked]
         # and remove them from cache and unlink the target files
         for scss_file in removed:
             del self.source_cache[scss_file]
             outpath = self.output_path(scss_file)
-            try:
-                outpath.unlink(missing_ok=True)
-            except OSError:
-                pass
+            for stale in (outpath, map_path(outpath)):
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError as exc:
+                    # not retried: the file stays until it is removed by hand
+                    logger.warning('Could not remove %s, left over from a deleted source: %s', stale, exc)
 
-    def find(self, path, all=False):
+    def find(self, path, find_all=False):
         """
         Run the compiler and see if was collected
         """
         self.compile_scss()
         if self.serve_static and path in self.files_cache:
             path = self.files_cache[path].as_posix()
-            return [path] if all else path
+            return [path] if find_all else path
         return []
 
     def list(self, ignore_patterns):

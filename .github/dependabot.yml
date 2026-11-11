@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Python dependencies, from pyproject.toml and uv.lock
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+
+  # the actions in .github/workflows are pinned to commit SHAs; this keeps the pins current
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
