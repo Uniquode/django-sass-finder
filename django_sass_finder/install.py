@@ -22,6 +22,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 import sysconfig
 import tarfile
@@ -145,11 +146,58 @@ def _extract(archive: Path, destination: Path) -> None:
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(destination)
     else:
+        if not hasattr(tarfile, 'data_filter'):
+            # Python before 3.11.4 cannot refuse members that would be written outside destination
+            raise InstallError(
+                'Extracting the archive safely needs Python 3.11.4 or later; upgrade Python, or '
+                'install Dart Sass yourself (https://sass-lang.com/install) and put it on PATH.')
         with tarfile.open(archive) as tf:
-            if hasattr(tarfile, 'data_filter'):
-                tf.extractall(destination, filter='data')
-            else:       # pragma: no cover - python < 3.11.4
-                tf.extractall(destination)
+            tf.extractall(destination, filter='data')
+
+
+def _make_executable(release: Path) -> None:
+    """Make sure the launcher and the Dart runtime it starts can be executed."""
+    if platform.system() == 'Windows':
+        return
+    for path in (release / 'sass', release / 'src' / 'dart'):
+        if not path.is_file():
+            raise InstallError(f'Unexpected archive layout: {path} not found')
+        path.chmod(path.stat().st_mode | 0o111)
+
+
+def _verify(launcher: Path, version: str) -> None:
+    """Run the freshly unpacked compiler and check that it reports the version we asked for."""
+    try:
+        # argument list, no shell; launcher is inside the archive we just unpacked
+        result = subprocess.run(    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            [str(launcher), '--version'], capture_output=True, text=True, timeout=TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise InstallError(f'The installed Dart Sass does not run: {exc}') from exc
+    reported = result.stdout.split()[:1]
+    if result.returncode != 0 or reported != [version]:
+        raise InstallError(
+            f'The installed Dart Sass did not report version {version}: '
+            f'{(result.stdout + result.stderr).strip() or "no output"}')
+
+
+def _replace(unpacked: Path, target: Path) -> None:
+    """
+    Put ``unpacked`` in the place of ``target`` (on the same filesystem, so it is a rename).
+
+    An existing ``target`` is kept until the replacement is in place, and restored if that fails.
+    """
+    backup = target.with_name(target.name + '.old')
+    shutil.rmtree(backup, ignore_errors=True)
+    had_previous = target.exists()
+    if had_previous:
+        target.rename(backup)
+    try:
+        unpacked.rename(target)
+    except OSError:
+        if had_previous:
+            backup.rename(target)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
 
 
 def _link_executable(launcher: Path, bin_dir: Path) -> Path:
@@ -193,20 +241,21 @@ def install(
 
     if force or not launcher.exists():
         expected = _expected_sha256(version, filename) if verify else None
-        with tempfile.TemporaryDirectory() as tmp:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as tmp, \
+                tempfile.TemporaryDirectory(dir=target.parent, prefix='.staging-') as staging:
             archive = Path(tmp) / filename
             actual = _download(f'{RELEASES_URL}/{version}/{filename}', archive)
             if expected is not None and actual != expected:
                 raise InstallError(
                     f'Checksum mismatch for {filename}: expected {expected}, got {actual}')
-            staging = Path(tmp) / 'unpacked'
-            _extract(archive, staging)
-            shutil.rmtree(target, ignore_errors=True)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(staging), str(target))
-        if not launcher.exists():
-            raise InstallError(f'Unexpected archive layout: {launcher} not found')
-        launcher.chmod(launcher.stat().st_mode | 0o111)
+            # unpacked beside the target, checked, and only then put in place
+            unpacked = Path(staging) / 'unpacked'
+            _extract(archive, unpacked)
+            release = unpacked / 'dart-sass'
+            _make_executable(release)
+            _verify(release / launcher.name, version)
+            _replace(unpacked, target)
 
     return _link_executable(launcher.resolve(), Path(bin_dir))
 

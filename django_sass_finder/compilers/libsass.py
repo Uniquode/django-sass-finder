@@ -24,7 +24,7 @@ class LibsassCompiler(Compiler):
             import sass
         except ImportError as exc:
             raise CompilerUnavailable(
-                'The libsass package is not installed: pip install "django-sass-finder[libsass]"'
+                'The libsass package is not installed: pip install "django-dart-sass-finder[libsass]"'
             ) from exc
         return sass
 

@@ -5,11 +5,12 @@ name: Publish
 #
 #   Test (push to master) passes ──> check ──> build ──> publish ──> release
 #
-# Nothing happens unless the version is new: if the tag v<version> already exists the run
-# stops after `check`. To release, bump `version` in pyproject.toml and merge to master.
+# Each version is released once. Nothing happens unless the version is new: if the tag
+# v<version> already exists the run stops after `check`, and nothing is published or released.
+# To release, bump `version` in pyproject.toml and merge to master.
 #
-# If `release` fails after `publish` succeeded, re-run the failed jobs: the version is already
-# on PyPI but has no tag yet, and only the release is retried.
+# There is no retry. If a run fails after `check`, do not re-run it: whatever it managed to
+# upload stays where it is, so bump `version` and release again.
 
 on:
   workflow_run:
@@ -42,7 +43,7 @@ jobs:
       BRANCH: ${{ github.event.workflow_run.head_branch }}
     steps:
       - name: Check out the tested commit
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
@@ -77,12 +78,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the tested commit
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
       - name: Build package
         run: uv build
@@ -101,7 +102,7 @@ jobs:
           done
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dist
           path: dist/
@@ -116,13 +117,13 @@ jobs:
       id-token: write     # trusted publishing; nothing else needs it
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dist
           path: dist/
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
       - name: Publish to PyPI via OIDC trusted publishing
         run: uv publish --trusted-publishing always dist/*
@@ -140,12 +141,12 @@ jobs:
       SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - name: Check out the tested commit
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Download distributions
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dist
           path: dist/

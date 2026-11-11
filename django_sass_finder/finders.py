@@ -10,6 +10,7 @@ from django.apps import apps
 from django.conf import settings
 from django.contrib.staticfiles.finders import AppDirectoriesFinder, BaseFinder
 from django.core.checks import Error
+from django.core.exceptions import ImproperlyConfigured
 from django.core.files.storage import FileSystemStorage
 
 from .compilers import get_compiler, map_path, read_map_sources
@@ -62,7 +63,14 @@ class ScssFinder(BaseFinder):
         # the compiler backend: 'dart' (default), 'libsass' or a dotted path to a Compiler class
         self.compiler_name = getattr(settings, 'SCSS_COMPILER', 'dart')
         executable = getattr(settings, 'SCSS_EXECUTABLE', None)
-        self.compiler = get_compiler(self.compiler_name, **({'executable': str(executable)} if executable else {}))
+        try:
+            self.compiler = get_compiler(
+                self.compiler_name, **({'executable': str(executable)} if executable else {}))
+            self.compiler_error = None
+        except (ImportError, TypeError) as exc:
+            # reported by check() (sass.E004), or raised when the finder is first used
+            self.compiler = None
+            self.compiler_error = exc
         # lookups arrive in bursts (one per static file on a page); scan the sources at most this often
         self.rescan_interval = getattr(settings, 'SCSS_RESCAN_INTERVAL', 0.5)
         self._lock = threading.RLock()
@@ -95,13 +103,26 @@ class ScssFinder(BaseFinder):
         errors = []
 
         for scss_item in self.scss_compile:
-            for _ in self.root.glob(scss_item):
-                break
-            else:
+            matches = list(self.root.glob(scss_item))
+            if not matches:
                 errors.append(Error(
                     f'{scss_item} returned no files in {self.scss_compile}.',
                     id='sass.E001'
                 ))
+            elif all(self.is_partial(match) for match in matches):
+                errors.append(Error(
+                    f'{scss_item} matches only Sass partials (names starting with "_"), '
+                    f'which are not compiled on their own.',
+                    id='sass.E001'
+                ))
+
+        if self.compiler is None:
+            errors.append(Error(
+                f'SCSS_COMPILER {self.compiler_name!r} could not be loaded: {self.compiler_error}',
+                hint="Use 'dart', 'libsass', or the dotted path of a django_sass_finder.compilers.Compiler class.",
+                id='sass.E004'
+            ))
+            return errors
 
         errors.extend(self.compiler.check())
 
@@ -114,6 +135,11 @@ class ScssFinder(BaseFinder):
             ))
 
         return errors
+
+    @staticmethod
+    def is_partial(path):
+        """A partial is only meant to be loaded by other files, so it is not compiled on its own."""
+        return path.name.startswith('_')
 
     def output_path(self, scss_file, makedirs=False):
         # determine where the file will be generated, and ensure path exists if possible
@@ -169,6 +195,8 @@ class ScssFinder(BaseFinder):
         return True
 
     def _compile_file(self, scss_file, outpath):
+        # what we already knew it reads, as it was before compiling
+        before = self._snapshot(set(self.source_cache.get(scss_file, ())) | {scss_file})
         dependencies = self.compiler.compile(
             scss_file, outpath,
             source_map=self.css_map,
@@ -176,7 +204,15 @@ class ScssFinder(BaseFinder):
             include_paths=[Path(path) for path in self.include_paths],
         )
         # record only after a successful compile, so a failing file is retried next time
-        self.source_cache[scss_file] = self._snapshot(dependencies | {scss_file})
+        wanted = dependencies | {scss_file}
+        after = self._snapshot(wanted)
+        if len(after) != len(wanted) or any(after[path] != mtime for path, mtime in before.items() if path in after):
+            # something it read was changed or removed while compiling, so the output may be
+            # out of date already: forget it was compiled, and compile again next time
+            logger.debug('%s changed while it was being compiled', scss_file)
+            self.source_cache.pop(scss_file, None)
+        else:
+            self.source_cache[scss_file] = after
 
     def compile_scss(self):
         """
@@ -185,6 +221,9 @@ class ScssFinder(BaseFinder):
         Lookups arrive in bursts, so a scan is skipped if one finished less than
         SCSS_RESCAN_INTERVAL seconds ago.
         """
+        if self.compiler is None:
+            raise ImproperlyConfigured(
+                f'SCSS_COMPILER {self.compiler_name!r} could not be loaded: {self.compiler_error}')
         with self._lock:
             if self._last_scan is not None and time.monotonic() - self._last_scan < self.rescan_interval:
                 return
@@ -199,8 +238,8 @@ class ScssFinder(BaseFinder):
             for scss_file in self.root.glob(scss_item):
                 if scss_file in checked:
                     continue        # matched by more than one pattern
-                if scss_file.name.startswith('_'):
-                    continue        # a partial, only meant to be loaded by other files
+                if self.is_partial(scss_file):
+                    continue
                 scss_stat = self._stat(scss_file)
                 if not scss_stat or not stat.S_ISREG(scss_stat.st_mode):
                     continue        # not is_file()
@@ -223,8 +262,9 @@ class ScssFinder(BaseFinder):
             for stale in (outpath, map_path(outpath)):
                 try:
                     stale.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # not retried: the file stays until it is removed by hand
+                    logger.warning('Could not remove %s, left over from a deleted source: %s', stale, exc)
 
     def find(self, path, find_all=False):
         """

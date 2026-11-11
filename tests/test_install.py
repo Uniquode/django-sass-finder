@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import hashlib
 import io
+import os
 import platform
 import shutil
 import tarfile
@@ -124,6 +125,7 @@ class TestInstall:
         launcher = tmp_path / 'env' / 'dart-sass' / self.VERSION / 'dart-sass' / 'sass'
         assert exe.resolve() == launcher.resolve()
         assert launcher.stat().st_mode & 0o111      # made executable
+        assert (launcher.parent / 'src' / 'dart').stat().st_mode & 0o111     # and so is the runtime
         assert fake_release.downloads == [
             f'{installer.RELEASES_URL}/{self.VERSION}/dart-sass-{self.VERSION}-linux-x64.tar.gz']
 
@@ -156,3 +158,41 @@ class TestInstall:
         monkeypatch.setattr(installer.sys, 'prefix', installer.sys.base_prefix)
         assert installer.main(['--version', self.VERSION]) == 1
         assert 'virtualenv' in capsys.readouterr().err
+
+    def test_rejects_a_release_that_reports_another_version(self, tmp_path, fake_release):
+        with pytest.raises(installer.InstallError, match='did not report version'):
+            installer.install('8.8.8', prefix=tmp_path / 'env', bin_dir=tmp_path / 'env' / 'bin')
+        assert not (tmp_path / 'env' / 'bin' / 'sass').exists()
+        assert not (tmp_path / 'env' / 'dart-sass' / '8.8.8').exists()
+
+    def test_force_keeps_the_old_install_if_the_new_one_is_bad(self, tmp_path, fake_release, monkeypatch):
+        exe = self.run(tmp_path)
+        launcher = exe.resolve()
+
+        def broken(release, version):
+            raise installer.InstallError('broken')
+        monkeypatch.setattr(installer, '_verify', broken)
+        with pytest.raises(installer.InstallError, match='broken'):
+            self.run(tmp_path, force=True)
+        assert launcher.is_file() and exe.exists()
+
+    def test_force_restores_the_old_install_if_the_move_fails(self, tmp_path, fake_release, monkeypatch):
+        exe = self.run(tmp_path)
+        launcher = exe.resolve()
+        real_rename = Path.rename
+
+        def failing_rename(self, target):
+            if self.name == 'unpacked':
+                raise OSError('disk full')
+            return real_rename(self, target)
+        monkeypatch.setattr(Path, 'rename', failing_rename)
+        with pytest.raises(OSError, match='disk full'):
+            self.run(tmp_path, force=True)
+        assert launcher.is_file()
+        assert not launcher.parent.parent.with_name(self.VERSION + '.old').exists()
+
+    def test_refuses_to_extract_without_a_tar_filter(self, tmp_path, fake_release, monkeypatch):
+        monkeypatch.delattr(tarfile, 'data_filter')
+        with pytest.raises(installer.InstallError, match='3.11.4'):
+            self.run(tmp_path)
+        assert not (tmp_path / 'env' / 'dart-sass' / self.VERSION).exists()

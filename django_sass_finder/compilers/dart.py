@@ -53,7 +53,8 @@ class DartSassCompiler(Compiler):
     @staticmethod
     def version(executable: str) -> Optional[str]:
         try:
-            result = subprocess.run(
+            # argument list, no shell; the executable comes from the project's own settings
+            result = subprocess.run(    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 [executable, '--version'], capture_output=True, text=True, timeout=TIMEOUT)
         except (OSError, subprocess.SubprocessError):
             return None
@@ -81,7 +82,9 @@ class DartSassCompiler(Compiler):
         args += [f'--load-path={path}' for path in include_paths]
         args += [f'{source}:{output}']
         try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT)
+            # argument list, no shell; every value comes from the project's own settings and sources
+            result = subprocess.run(    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+                args, capture_output=True, text=True, timeout=TIMEOUT)
         except (OSError, subprocess.SubprocessError) as exc:
             raise CompilerUnavailable(f'Could not run Dart Sass: {exc}') from exc
         if result.returncode != 0:

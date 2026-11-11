@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from django.contrib.staticfiles import finders
+from django.core.exceptions import ImproperlyConfigured
 from django.test.utils import override_settings
 
 from django_sass_finder.compilers import CompileError, get_compiler
@@ -112,8 +113,11 @@ def write_source(project, name, content):
     path.parent.mkdir(parents=True, exist_ok=True)
     now = time.time()
     mtime = max(path.stat().st_mtime, now) + 2 if path.exists() else now - 100
-    path.write_text(content)
-    os.utime(path, (mtime, mtime))
+    # written beside the file and renamed into place, so a reader never sees a half written source
+    scratch = path.with_name(path.name + '.tmp')
+    scratch.write_text(content)
+    os.utime(scratch, (mtime, mtime))
+    os.replace(scratch, path)
     return path
 
 
@@ -285,7 +289,39 @@ def test_finder_compile_error_is_raised_then_retried(project):
 def test_finder_overlapping_patterns_compile_once(project):
     with override_settings(SCSS_COMPILE=['site.scss', '**/*.scss']):
         f = ScssFinder()
+        compiled = []
+        real_compile = f.compiler.compile
+
+        def counting_compile(source, *args, **kwargs):
+            compiled.append(source.name)
+            return real_compile(source, *args, **kwargs)
+        f.compiler.compile = counting_compile
         assert sorted(name for name, _ in f.list([])) == sorted(CSS_NAMES)
+        assert sorted(compiled) == sorted(Path(name).name for name in FIXTURE_CONTENT)
+
+
+def test_finder_does_not_trust_a_dependency_changed_while_compiling(project):
+    write_source(project, '_vars.scss', '$colour: red;\n')
+    write_source(project, 'themed.scss', '@import "vars";\na { color: $colour; }\n')
+    f = ScssFinder()
+    assert 'red' in Path(f.find('themed.css')).read_text()
+
+    real_compile = f.compiler.compile
+    edits = []
+
+    def compile_and_edit(source, *args, **kwargs):
+        result = real_compile(source, *args, **kwargs)
+        if source.name == 'themed.scss' and not edits:
+            # the dependency is edited after the compiler read it, before the finder looked
+            edits.append(write_source(project, '_vars.scss', '$colour: blue;\n'))
+        return result
+
+    write_source(project, 'themed.scss', '@import "vars";\na { color: $colour; } /* edit */\n')
+    f.compiler.compile = compile_and_edit
+    assert 'red' in Path(f.find('themed.css')).read_text()      # compiled from what was read
+    assert edits
+    f.compiler.compile = real_compile
+    assert 'blue' in Path(f.find('themed.css')).read_text()     # but not trusted as current
 
 
 def test_finder_rescan_interval(project):
@@ -332,6 +368,36 @@ def test_check_reports_unsupported_style(project):
 def test_check_reports_pattern_without_files(project):
     with override_settings(SCSS_COMPILE=['nothing-here.scss']):
         assert [e.id for e in ScssFinder().check()] == ['sass.E001']
+
+
+def test_check_reports_pattern_matching_only_partials(project):
+    write_source(project, '_only.scss', '$a: 1;\n')
+    with override_settings(SCSS_COMPILE=['_only.scss']):
+        errors = ScssFinder().check()
+        assert [e.id for e in errors] == ['sass.E001']
+        assert 'partials' in errors[0].msg
+    with override_settings(SCSS_COMPILE=['*.scss']):
+        assert ScssFinder().check() == []       # a pattern that also matches real sources is fine
+
+
+@pytest.mark.parametrize('compiler', [
+    'no.such.module.Compiler',      # missing module
+    'django_sass_finder.compilers.Nope',     # missing class
+    'nodots',                       # not a dotted path
+    'django_sass_finder.finders.logger',     # not a class
+])
+def test_check_reports_unloadable_compiler(project, compiler):
+    with override_settings(SCSS_COMPILER=compiler):
+        finder = ScssFinder()
+        assert [e.id for e in finder.check() if e.id == 'sass.E004'] == ['sass.E004']
+        with pytest.raises(ImproperlyConfigured):
+            finder.find('site.css')
+
+
+def test_check_reports_compiler_rejecting_its_options(project):
+    with override_settings(SCSS_COMPILER='django_sass_finder.compilers.libsass.LibsassCompiler',
+                           SCSS_EXECUTABLE='/some/sass'):
+        assert 'sass.E004' in [e.id for e in ScssFinder().check()]      # libsass takes no executable
 
 
 def test_check_reports_missing_dart_executable(project):

@@ -86,8 +86,8 @@ STATICFILES_DIRS = [                            # this should be at or above the
 If CSS_COMPILE_DIR is not set, the SCSS_ROOT is used and css (and map) files are generated next to the
 scss source files.
 
-Django's system checks (`manage.py check`) report a missing compiler, an unsupported `CSS_STYLE`, and
-`SCSS_COMPILE` patterns that match no files.
+Django's system checks (`manage.py check`) report a missing compiler, a `SCSS_COMPILER` that cannot be
+loaded, an unsupported `CSS_STYLE`, and `SCSS_COMPILE` patterns that match no files or only partials.
 
 ## Usage
 This module dynamically compiles to target .css files, and recompiles them on demand whenever
@@ -100,6 +100,14 @@ the usual files from STATICFILES_DIRS and app `static` directories.
 
 The development server is perfectly able to serve these from STATICFILES_DIRS without the need
 to run `collectstatic`.
+
+Limitations:
+
+- Compile into an output directory from one process at a time. Two processes (for example two
+  `collectstatic` runs) compiling the same files at once can leave a partly written file behind.
+- The output of a source is removed when that source is deleted while the finder is running. If a
+  source was deleted while the server was stopped, delete its `.css` (and `.css.map`) by hand; a
+  file that cannot be removed is logged as a warning and left alone.
 
 ## Continuous integration
 Install the package, then run the same command as above, before anything that compiles:

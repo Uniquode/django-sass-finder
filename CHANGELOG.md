@@ -21,7 +21,8 @@ bringing packaging, dependencies and tests up to date.
   `CSS_STYLE` to keep a specific format.
 - Compile errors are raised as `django_sass_finder.compilers.CompileError` rather than
   `sass.CompileError`.
-- Source maps are now written as `{name}.css.map` (previously `{name}.map`).
+- Source maps are now written as `{name}.css.map` (previously `{name}.map`). The `.map` files
+  written by earlier versions are not removed; delete them by hand.
 - Files whose name starts with an underscore are Sass partials and are no longer compiled on
   their own.
 - Requires Python 3.11 or later (previously 3.7+), Django 5.2 or later (previously 3.2), and no
@@ -41,7 +42,9 @@ bringing packaging, dependencies and tests up to date.
 - Dart Sass warnings (for example the deprecation of `@import`) are logged to the
   `django_sass_finder` logger at warning level.
 - `SCSS_RESCAN_INTERVAL` setting. Lookups arrive in bursts; sources are scanned at most this often.
-- System check `sass.E002` for a missing or unusable compiler.
+- System checks `sass.E002` for a missing or unusable compiler and `sass.E004` for a
+  `SCSS_COMPILER` that cannot be loaded. `sass.E001` also reports a pattern that matches only
+  partials.
 - GitHub Actions workflow (`.github/workflows/test.yml`) running the test suite across Python
   3.11 to 3.15 with both compiler backends.
 
@@ -59,6 +62,9 @@ bringing packaging, dependencies and tests up to date.
 - `find()` took an `all` argument, which current Django no longer passes (it calls
   `find(path, find_all=...)`), so every lookup through `django.contrib.staticfiles` raised
   `TypeError`. It is now `find_all`.
+- A file changed or removed while it was being compiled could leave stale CSS marked as current.
+- A failure to remove the output of a deleted source is logged as a warning, not ignored silently.
+- A source map that is valid JSON but has no list of sources no longer raises; the file is compiled again.
 - Changing a file loaded by a source with `@import` or `@use` did not recompile it; only the
   modification time of the source itself was checked.
 - Concurrent requests (the development server is threaded) could briefly find no compiled files

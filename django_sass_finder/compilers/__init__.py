@@ -53,6 +53,8 @@ def read_map_sources(mapfile: Path) -> Optional[frozenset]:
         sources = json.loads(mapfile.read_text(encoding='utf-8'))['sources']
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    if not isinstance(sources, list) or not all(isinstance(source, str) for source in sources):
+        return None     # valid JSON, but not a source map we understand
     found = set()
     for source in sources:
         parsed = urlparse(source)
