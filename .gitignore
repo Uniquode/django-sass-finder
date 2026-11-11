@@ -10,3 +10,6 @@ __pycache__
 /.vscode
 /.idea
 /.nova
+
+# local environment (direnv)
+/.envrc

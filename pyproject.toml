@@ -1,54 +1,68 @@
-[tool.poetry]
+[project]
 name = "django-sass-finder"
-version = "2.0.7"
+version = "3.0.0"
 description = "A Django finder that compiles Sass files"
-authors = [
-    "Jesus Trujillo <trudev.professional@gmail.com>",
-    "David Nugent <davidn@uniquode.io"
-]
-repository = "https://github.com/Uniquode/django_sass_finder"
+readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "Jesus Trujillo", email = "trudev.professional@gmail.com" },
+    { name = "David Nugent", email = "davidn@uniquode.io" },
+]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries",
     "Framework :: Django",
-    "Framework :: Django :: 3.0",
-    "Framework :: Django :: 3.1",
-    "Framework :: Django :: 3.2",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0"
 ]
-keywords=[
+keywords = [
     "django",
     "scss",
     "staticfiles",
 ]
-packages = [
-    { include = "django_sass_finder" }
+dependencies = [
+    "Django>=5.2,<7",
 ]
 
+[project.optional-dependencies]
+# legacy compiler backend (SCSS_COMPILER = 'libsass'); Dart Sass is the default
+libsass = [
+    "libsass>=0.23,<1.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.7"
-Django = "^3.2"
-libsass = "^0.21"
+[project.urls]
+Repository = "https://github.com/Uniquode/django_sass_finder"
 
-[tool.poetry.dev-dependencies]
-pytest = "^6.2"
-pytest-pythonpath = "^0.7"
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "libsass>=0.23,<1.0",
+]
+
+[tool.django-sass-finder]
+# Dart Sass release installed by `python -m django_sass_finder.install`
+dart-sass-version = "1.108.1"
 
 [tool.pytest.ini_options]
-minversion = "6.0"
+minversion = "9.0"
 testpaths = [
     "tests",
 ]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "django_sass_finder"
+module-root = ""

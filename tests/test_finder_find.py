@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
+import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import pytest
 
+from django.contrib.staticfiles import finders
 from django.test.utils import override_settings
 
+from django_sass_finder.compilers import CompileError, get_compiler
 from django_sass_finder.finders import ScssFinder
 
 
@@ -60,126 +64,298 @@ body {
 """
 }
 
-
-@pytest.fixture(scope='session')
-def basedir():
-
-    with TemporaryDirectory() as tmppath:
-        tmpdir = Path(tmppath).resolve(strict=True)
-        base_dir = tmpdir
-        staticfiles_dir = base_dir / 'static'
-        scss_root = base_dir / 'scss'
-        scss_compile = ['**/*.scss']
-        # use a separate storage for our files (not staticfiles or appdirs)
-        css_compile_dir_default = base_dir / 'output' / 'css'
-        static_root = base_dir / 'static_root'
-        for filename, scss_content in FIXTURE_CONTENT.items():
-            scss_file: Path = scss_root / filename
-            scss_file.parent.mkdir(parents=True, exist_ok=True)
-            scss_file.write_text(scss_content)
-        with override_settings(
-                SCSS_ROOT=scss_root,
-                SCSS_COMPILE=scss_compile,
-                SCSS_INCLUDE_PATHS=[base_dir / 'node_modules'],
-                CSS_COMPILE_DIR=css_compile_dir_default,
-                STATICFILES_DIRS=[staticfiles_dir],
-                CSS_STYLE='compact',
-                CSS_MAP=True,
-                STATIC_ROOT=static_root):
-            yield tmpdir
+CSS_NAMES = [name.rsplit('.', maxsplit=1)[0] + '.css' for name in FIXTURE_CONTENT]
 
 
-def test_finder_list_all(basedir):
+@pytest.fixture(params=['dart', 'libsass'])
+def backend(request):
+    """The name of each compiler backend; skipped if unavailable (a failure if required)."""
+    problems = get_compiler(request.param).check()
+    if problems:
+        message = f'{request.param} compiler unavailable: {problems[0].msg}'
+        if os.environ.get('SCSS_TEST_REQUIRE_ALL'):
+            pytest.fail(message)
+        pytest.skip(message)
+    return request.param
+
+
+@pytest.fixture
+def project(tmp_path, backend):
+    """A scss source tree, with the settings pointing at it. Yields the base directory."""
+    base_dir = tmp_path.resolve()
+    scss_root = base_dir / 'scss'
+    for filename, scss_content in FIXTURE_CONTENT.items():
+        scss_file: Path = scss_root / filename
+        scss_file.parent.mkdir(parents=True, exist_ok=True)
+        scss_file.write_text(scss_content)
+    with override_settings(
+            SCSS_COMPILER=backend,
+            SCSS_ROOT=scss_root,
+            SCSS_COMPILE=['**/*.scss'],
+            SCSS_INCLUDE_PATHS=[base_dir / 'node_modules'],
+            SCSS_RESCAN_INTERVAL=0,
+            # use a separate storage for our files (not staticfiles or appdirs)
+            CSS_COMPILE_DIR=base_dir / 'output' / 'css',
+            STATICFILES_DIRS=[base_dir / 'static'],
+            CSS_STYLE='expanded',
+            CSS_MAP=True,
+            STATIC_ROOT=base_dir / 'static_root'):
+        yield base_dir
+
+
+def write_source(project, name, content):
+    """
+    Write a source file with a controlled mtime, so tests do not depend on clock granularity:
+    new files look old (already there before anything is compiled), edits land in the future.
+    """
+    path = project / 'scss' / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    mtime = max(path.stat().st_mtime, now) + 2 if path.exists() else now - 100
+    path.write_text(content)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def output_of(project, name):
+    return project / 'output' / 'css' / name
+
+
+def test_finder_list_all(project):
     f = ScssFinder()
-    for filename in FIXTURE_CONTENT.keys():
-        # change ext to .css
-        filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-
+    for filename in CSS_NAMES:
         f._serve_static = True
-        found = f.find(filename, all=True)
+        found = f.find(filename, find_all=True)
         assert isinstance(found, list)
         assert len(found) == 1
         assert str(found[0]).endswith(filename)
 
         f._serve_static = False
-        found = f.find(filename, all=True)
+        found = f.find(filename, find_all=True)
         assert isinstance(found, list)
         assert len(found) == 0
 
 
-def test_finder_find_not_all(basedir):
+def test_finder_find_not_all(project):
     f = ScssFinder()
-    for filename in FIXTURE_CONTENT.keys():
-        # change ext to .css
-        filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-
+    for filename in CSS_NAMES:
         f._serve_static = True
-        found = f.find(filename, all=False)
+        found = f.find(filename)
         # returns the absolute path of the found file(s)
         assert isinstance(found, str)
         assert str(found).endswith(filename)
 
         f._serve_static = False
-        found = f.find(filename, all=False)
-        # returns the absolute path of the found file(s)
+        found = f.find(filename)
         assert isinstance(found, list)
         assert not found
 
 
-def test_finder_find_all_no_matching_paths_returns_empty_list(basedir):
+def test_finder_find_no_matching_paths_returns_empty_list(project):
     f = ScssFinder()
-    found = f.find("nonexisting/path/to/somefile.css", all=True)
-    assert not found
-    assert found == []
+    for find_all in (True, False):
+        found = f.find("nonexisting/path/to/somefile.css", find_all=find_all)
+        assert not found
+        assert found == []
 
 
-def test_finder_find_no_matching_paths_returns_empty_list(basedir):
+def test_staticfiles_find_api(project):
+    """The way django itself (runserver, findstatic) calls finders."""
+    with override_settings(STATICFILES_FINDERS=['django_sass_finder.finders.ScssFinder']):
+        finders.get_finder.cache_clear()
+        try:
+            found = finders.find('site.css')
+            assert found and found.endswith('site.css')
+            assert Path(found).read_text().strip()
+            assert [Path(p).name for p in finders.find('site.css', find_all=True)] == ['site.css']
+            assert finders.find('nope.css') is None
+        finally:
+            finders.get_finder.cache_clear()
+
+
+def test_staticfiles_list_api(project):
     f = ScssFinder()
-    found = f.find("nonexisting/path/to/somefile.css", all=False)
-    assert not found
-    assert found == []
+    listed = {path for path, storage in f.list([])}
+    assert listed == set(CSS_NAMES)
+    assert all(storage.location == str(project / 'output' / 'css') for _, storage in f.list([]))
 
 
-def test_finder_find_recompiles_updated(basedir):
+def test_finder_find_recompiles_updated(project):
     f = ScssFinder()
-
-    # -- fixture generation --
     modified_times = {}
-    # scan first, and save modified times of output files
-    for filename in FIXTURE_CONTENT.keys():
-        # change ext to .css
-        filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-        # use find to kick off a scss_compile
-        for found_file in f.find(filename, all=True):
-            found_path = Path(found_file)
-            modified_times[found_path] = found_path.stat().st_mtime
+    for filename in CSS_NAMES:
+        modified_times[filename] = Path(f.find(filename)).stat().st_mtime_ns
 
-    base_dir = basedir
-    scss_root = base_dir / 'scss'
+    time.sleep(0.05)
+    # touch only the first one
+    write_source(project, 'site.scss', FIXTURE_CONTENT['site.scss'])
 
-    def touch(name):
-        filepath = scss_root / name
-        filepath.touch(exist_ok=True)
+    for filename in CSS_NAMES:
+        changed = Path(f.find(filename)).stat().st_mtime_ns != modified_times[filename]
+        assert changed == (filename == 'site.css'), filename
 
-    time.sleep(0.5)
-    for filename in FIXTURE_CONTENT.keys():
-        # touch only the first one
-        touch(filename)
-        break
 
-    first = True
-    # iterate
-    for filename in FIXTURE_CONTENT.keys():
-        # change ext to .css
-        filename = filename.rsplit('.', maxsplit=1)[0] + '.css'
-        # use find to kick off a scss_compile
-        for found_file in f.find(filename, all=True):
-            found_path = Path(found_file)
-            if first:
-                assert modified_times[found_path] != found_path.stat().st_mtime
-                first = False
-            else:
-                assert modified_times[found_path] == found_path.stat().st_mtime
+def test_finder_does_not_recompile_unchanged_in_new_process(project):
+    """A fresh finder (a restarted server) reuses current output, thanks to the source map."""
+    first = ScssFinder()
+    mtimes = {name: Path(first.find(name)).stat().st_mtime_ns for name in CSS_NAMES}
+    time.sleep(0.05)
+    second = ScssFinder()
+    for name in CSS_NAMES:
+        assert Path(second.find(name)).stat().st_mtime_ns == mtimes[name]
 
-    # double-check we did at least one iteration
-    assert not first
+
+def test_finder_recompiles_when_imported_partial_changes(project):
+    write_source(project, '_vars.scss', '$colour: red;\n')
+    write_source(project, 'themed.scss', '@import "vars";\na { color: $colour; }\n')
+    f = ScssFinder()
+    css = Path(f.find('themed.css'))
+    assert 'red' in css.read_text()
+
+    write_source(project, '_vars.scss', '$colour: blue;\n')
+    assert 'blue' in Path(f.find('themed.css')).read_text()
+
+
+def test_finder_notices_changed_partial_after_restart(project):
+    write_source(project, '_vars.scss', '$colour: red;\n')
+    write_source(project, 'themed.scss', '@import "vars";\na { color: $colour; }\n')
+    assert 'red' in Path(ScssFinder().find('themed.css')).read_text()
+
+    write_source(project, '_vars.scss', '$colour: blue;\n')
+    assert 'blue' in Path(ScssFinder().find('themed.css')).read_text()
+
+
+def test_finder_does_not_compile_partials_on_their_own(project):
+    write_source(project, '_vars.scss', '$colour: red;\n')
+    f = ScssFinder()
+    assert f.find('_vars.css') == []
+    assert not any(name.startswith('_') for name, _ in f.list([]))
+    assert not output_of(project, '_vars.css').exists()
+
+
+def test_finder_include_paths(project):
+    libs = project / 'node_modules'
+    libs.mkdir()
+    (libs / 'colours.scss').write_text('$brand: green;\n')
+    write_source(project, 'branded.scss', '@import "colours";\na { color: $brand; }\n')
+    assert 'green' in Path(ScssFinder().find('branded.css')).read_text()
+
+
+def test_finder_writes_source_map_when_requested(project):
+    f = ScssFinder()
+    css = Path(f.find('site.css'))
+    assert (css.parent / 'site.css.map').is_file()
+    assert 'sourceMappingURL=site.css.map' in css.read_text()
+
+
+def test_finder_leaves_no_source_map_when_not_requested(project):
+    with override_settings(CSS_MAP=False):
+        f = ScssFinder()
+        css = Path(f.find('site.css'))
+        assert not (css.parent / 'site.css.map').exists()
+        assert 'sourceMappingURL' not in css.read_text()
+        # without a map we cannot know what a file read, so a new process compiles again
+        write_source(project, '_vars.scss', '$colour: red;\n')
+        write_source(project, 'themed.scss', '@import "vars";\na { color: $colour; }\n')
+        assert 'red' in Path(f.find('themed.css')).read_text()
+        write_source(project, '_vars.scss', '$colour: blue;\n')
+        assert 'blue' in Path(f.find('themed.css')).read_text()
+
+
+def test_finder_removes_output_of_deleted_source(project):
+    f = ScssFinder()
+    css = Path(f.find('admin/admin-site.css'))
+    assert css.is_file()
+    (project / 'scss' / 'admin' / 'admin-site.scss').unlink()
+    assert f.find('admin/admin-site.css') == []
+    assert not css.exists()
+    assert not (css.parent / 'admin-site.css.map').exists()
+
+
+def test_finder_compile_error_is_raised_then_retried(project):
+    path = write_source(project, 'broken.scss', 'a { color: ; ;;; { \n')
+    f = ScssFinder()
+    with pytest.raises(CompileError):
+        f.find('site.css')
+    write_source(project, 'broken.scss', 'a { color: red; }\n')
+    assert 'red' in Path(f.find('broken.css')).read_text()
+    assert path.exists()
+
+
+def test_finder_overlapping_patterns_compile_once(project):
+    with override_settings(SCSS_COMPILE=['site.scss', '**/*.scss']):
+        f = ScssFinder()
+        assert sorted(name for name, _ in f.list([])) == sorted(CSS_NAMES)
+
+
+def test_finder_rescan_interval(project):
+    with override_settings(SCSS_RESCAN_INTERVAL=3600):
+        f = ScssFinder()
+        assert f.find('site.css')
+        write_source(project, 'late.scss', 'a { b: c }\n')
+        assert f.find('late.css') == []         # within the interval: not scanned again
+        f._last_scan -= 7200
+        assert f.find('late.css')
+
+
+def test_finder_is_threadsafe(project):
+    f = ScssFinder()
+    stop = threading.Event()
+
+    def churn():
+        n = 0
+        while not stop.is_set():
+            n += 1
+            write_source(project, 'site.scss', FIXTURE_CONTENT['site.scss'] + f'/* {n} */\n')
+            time.sleep(0.01)
+
+    def lookup(_):
+        return [bool(f.find(name)) for name in CSS_NAMES]
+
+    thread = threading.Thread(target=churn)
+    thread.start()
+    try:
+        with ThreadPoolExecutor(8) as pool:
+            results = list(pool.map(lookup, range(40)))
+    finally:
+        stop.set()
+        thread.join()
+    assert all(all(row) for row in results)
+
+
+def test_check_reports_unsupported_style(project):
+    with override_settings(CSS_STYLE='no-such-style'):
+        assert 'sass.E003' in [e.id for e in ScssFinder().check()]
+    assert ScssFinder().check() == []
+
+
+def test_check_reports_pattern_without_files(project):
+    with override_settings(SCSS_COMPILE=['nothing-here.scss']):
+        assert [e.id for e in ScssFinder().check()] == ['sass.E001']
+
+
+def test_check_reports_missing_dart_executable(project):
+    with override_settings(SCSS_COMPILER='dart', SCSS_EXECUTABLE='/no/such/sass'):
+        assert 'sass.E002' in [e.id for e in ScssFinder().check()]
+
+
+def test_dart_compressed_style_and_modules():
+    """Modern Sass: only Dart Sass understands the module system."""
+    if get_compiler('dart').check():
+        pytest.skip('dart compiler unavailable')
+    from tempfile import TemporaryDirectory
+    with TemporaryDirectory() as tmp:
+        base = Path(tmp).resolve()
+        (base / 'scss').mkdir()
+        (base / 'scss' / '_vars.scss').write_text('$c: #333;\n')
+        (base / 'scss' / 'site.scss').write_text(
+            '@use "sass:color";\n@use "vars";\na { color: vars.$c; b: color.scale(vars.$c, $lightness: 20%); }\n')
+        with override_settings(SCSS_COMPILER='dart', SCSS_ROOT=base / 'scss', CSS_COMPILE_DIR=base / 'css',
+                               CSS_STYLE='compressed', CSS_MAP=True, SCSS_RESCAN_INTERVAL=0):
+            css = Path(ScssFinder().find('site.css'))
+            text = css.read_text()
+            assert text.startswith('a{color:#333;')
+            # the module is tracked as a dependency too
+            (base / 'scss' / '_vars.scss').write_text('$c: #444;\n')
+            os.utime(base / 'scss' / '_vars.scss', (time.time() + 10, time.time() + 10))
+            assert Path(ScssFinder().find('site.css')).read_text().startswith('a{color:#444;')
